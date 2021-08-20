@@ -1,5 +1,6 @@
-# from os import stat
-from cowin_api import beneficiaries, calendarByPin, confirmOTP, generateOTP, publicPin
+import os
+from shutil import copyfile
+from cowin_api import beneficiaries, book, calendarByPin, confirmOTP, generateOTP, generate_captcha, publicPin
 import requests
 from requests import status_codes
 from requests.api import head, request
@@ -8,30 +9,40 @@ import logging
 import json
 import time
 import hashlib
+import configparser
 
 
 logging.basicConfig(format='[%(levelname)s @ %(asctime)s] %(message)s', level=20, datefmt='%Y-%m-%d %I:%M:%S %p', filename='bot.log')
 logger.log("--- INITIALIZING ---")
 
 
-mobile_no = "7506149022"
-pincode = "400064"
-token ="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX25hbWUiOiJjNDkyNWVmNi04ODgxLTQ4OWEtYWQ1ZS1hMzI3YzZiNzQwMDgiLCJ1c2VyX2lkIjoiYzQ5MjVlZjYtODg4MS00ODlhLWFkNWUtYTMyN2M2Yjc0MDA4IiwidXNlcl90eXBlIjoiQkVORUZJQ0lBUlkiLCJtb2JpbGVfbnVtYmVyIjo3NTA2MTQ5MDIyLCJiZW5lZmljaWFyeV9yZWZlcmVuY2VfaWQiOjM0MzMyNzE3ODE5OTEwLCJzZWNyZXRfa2V5IjoiYjVjYWIxNjctNzk3Ny00ZGYxLTgwMjctYTYzYWExNDRmMDRlIiwic291cmNlIjoiY293aW4iLCJ1YSI6Ik1vemlsbGEvNS4wIChXaW5kb3dzIE5UIDEwLjA7IFdpbjY0OyB4NjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS85MS4wLjQ0NzIuNzcgU2FmYXJpLzUzNy4zNiIsImRhdGVfbW9kaWZpZWQiOiIyMDIxLTA2LTA2VDExOjQ5OjA4LjAyMVoiLCJpYXQiOjE2MjI5ODAxNDgsImV4cCI6MTYyMjk4MTA0OH0.ZsnNhYECqDGup6XvfSyC4_oHozLwybrAQdtuDxY_DYU"
-txnId = ""
-district_id = "395"
-age_limit = 18
-benefeciary_ID = ""
-prod_api = "https://cdn-api.co-vin.in/api"
-test_api = "https://cdndemo-api.co-vin.in/api"
-curr_api = test_api 
-test_secret = "3sjOr2rmM52GzhpMHjDEE1kpQeRxwFDr4YcBEimi"
-prod_secret = "U2FsdGVkX19mD56KTNfQsZgXJMwOG7u/6tuj0Qvil1LEjx783oxHXGUTDWYm+XMYVGXPeu+a24sl5ndEKcLTUQ=="
-curr_secret = prod_secret
+if not os.path.isfile("config.ini"):
+    try:
+        copyfile("default_config.ini", "config.ini")
+        logger.log("Config file config.ini not found, generating a new one from default_config.ini", "warning")
+    except:
+        logger.log("Neither config.ini , nor default_config.ini do not exist, cannot create bot." , "CRITICAL")
+        os.system.exit(1)
 
+
+config = configparser.ConfigParser()
+config.read("config.ini")
+
+
+mobile_no = config["Info"]["mobile"]
+date =config["Info"]["date"]
+pincode = config["Info"]["pincode"]
+dose =config["Info"]["dose"]
+age_limit = config["Info"]["age_limit"]    
+benefeciary_ID = config["Info"]["beneficiary_id"]
+# district_id = "395"
+
+txnId = ""
+token =""
 
 def authenticate():
 
-    data = generateOTP(mobile_no , curr_secret)
+    data = generateOTP(mobile_no )
     logger.log(data.text , str(data.status_code))
     if(data.status_code != 200):
         return
@@ -44,11 +55,12 @@ def authenticate():
     data = confirmOTP(txnId , otp)
     logger.log(data.text , str(data.status_code))
 
-    while(data.status_code != 200) :
-        print(data.status_code)
-        time.sleep(30)
-        data = confirmOTP(txnId , otp)
-        logger.log(data.text , str(data.status_code))
+    if(data.status_code == 200):
+        print("Authenticated !")
+    else: 
+        print("Error Occured. Check log file.")
+        exit(1)
+    
 
     global token
     token = data.json()["token"]
@@ -59,12 +71,57 @@ def benef():
     print(data.text)
     logger.log(data.text , str(data.status_code))
 
+def findSlot():
+    while(True):
 
-# authenticate()
-benef()
+        data = calendarByPin(pincode , date , token )
+
+        if(data.status_code == 401):
+            logger.log("authenticating again")
+            authenticate()
+            continue
+
+        elif(data.status_code != 200):
+            logger.log(data.text)
+            print("Error Occured. Check log file ")
+            exit(1)
+
+        for center in data:
+            slots = center['sessions'][0]['available_capacity_dose' + dose]
+            vaccine = center['sessions'][0]['vaccine']
+            center_name = center['name']
+            if(slots > 1 and age_limit >= int(center['min_age_limit'])):
+                return center
 
 
-# data = confirmOTP(txnID="dd470ce3-9f26-46be-9bb8-05b5d7114049" , otp = hashlib.sha256('800580'.encode()).hexdigest())
-# print(data.text)
-# logger.log(data.text , str(data.status_code))
+def bookSlot(center):
+    center_id = center['center_id']
+    session_id = center['sessions'][0]['session_id']
+    slot = center['sessions'][0]['slots'][0]
+
+    captcha = generate_captcha(token)
+    
+    data = book(token=token , center_id= center_id, session_id= session_id , slot=slot , benef_id=benefeciary_ID , dose=dose , captcha=captcha)
+    logger.log(data.text)
+    if(data.status_code == 200):
+        print("Slot booked. Check log for details.")
+        exit(0)
+    elif(data.status_code == 409):
+        print("Unlucky")
+        return 
+    else: 
+        print("Error Occured. Check log file.")
+        exit(1)
+
+
+if __name__ == "__main__": 
+    
+    authenticate()
+    while(True):
+        center = findSlot()
+        bookSlot(center)
+
+    
+
+
 
